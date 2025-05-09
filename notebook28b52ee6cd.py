@@ -1,125 +1,112 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
-import os
 import pandas as pd
-from langchain.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
-from langchain.indexes import VectorstoreIndexCreator
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.embeddings import HuggingFaceEmbeddings
-from langchain.docstore.document import Document
+from langchain.llms import OpenAI
+from langchain.chains import LLMChain
+from langchain.prompts import PromptTemplate
+import tempfile
+import os
 
-# حل مشكلة chromadb
-try:
-    from langchain.vectorstores import Chroma
-except ImportError:
-    st.warning("جارٍ تثبيت حزم إضافية... (قد يستغرق دقائق)")
-    os.system("pip install chromadb sentence-transformers")
-    from langchain.vectorstores import Chroma
+# إعداد واجهة المستخدم
+st.set_page_config(page_title="🦜 نظام التحليل الذكي للمسابقات", layout="wide")
+st.title("🧠 نظام فهم وتحليل البيانات الذكي")
 
-# واجهة المستخدم
-st.set_page_config(page_title="نظام مساعدة المسابقة", layout="wide")
-st.title("🧠 نظام الإجابة عن أسئلة المسابقة")
+# تحميل الملف
+uploaded_file = st.file_uploader("رفع ملف البيانات (Excel أو CSV)", type=['xlsx', 'csv'])
 
-# 1. تحميل الملفات
-uploaded_file = st.file_uploader(
-    "رفع وثيقة المسابقة (PDF, DOCX, TXT, XLSX)", 
-    type=['pdf', 'docx', 'txt', 'xlsx'],
-    accept_multiple_files=False
-)
-
-# 2. معالجة الملفات (بما في ذلك Excel)
-def process_file(uploaded_file):
-    try:
-        temp_file = f"temp_{uploaded_file.name}"
-        with open(temp_file, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        
-        if uploaded_file.name.endswith('.pdf'):
-            loader = PyPDFLoader(temp_file)
-            documents = loader.load()
-        elif uploaded_file.name.endswith('.docx'):
-            loader = Docx2txtLoader(temp_file)
-            documents = loader.load()
-        elif uploaded_file.name.endswith('.txt'):
-            loader = TextLoader(temp_file, encoding='utf-8')
-            documents = loader.load()
-        elif uploaded_file.name.endswith('.xlsx'):
-            # معالجة ملفات Excel
-            df = pd.read_excel(temp_file)
-            documents = []
-            for index, row in df.iterrows():
-                content = "\n".join([f"{col}: {val}" for col, val in row.items()])
-                documents.append(Document(page_content=content, metadata={"source": "excel"}))
-            loader = None  # لا يوجد loader لملفات Excel
-        else:
-            st.error("نوع الملف غير مدعوم")
-            return None, None
-        
-        os.remove(temp_file)  # حذف الملف المؤقت
-        return documents, loader
-    
-    except Exception as e:
-        st.error(f"خطأ في معالجة الملف: {str(e)}")
-        return None, None
-
-# 3. نظام الأسئلة والإجابات
 if uploaded_file:
-    documents, loader = process_file(uploaded_file)
+    # معالجة الملف
+    with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_file_path = tmp_file.name
     
-    if documents:  # التأكد من وجود المستندات
-        st.success(f"تم تحميل البيانات بنجاح! (عدد السجلات: {len(documents)})")
+    try:
+        if uploaded_file.name.endswith('.xlsx'):
+            df = pd.read_excel(tmp_file_path)
+        else:
+            df = pd.read_csv(tmp_file_path)
         
-        # إنشاء فهرس للبحث
-        try:
-            if loader:  # إذا كان هناك loader (للملفات غير Excel)
-                index = VectorstoreIndexCreator(
-                    embedding=HuggingFaceEmbeddings(),
-                    text_splitter=RecursiveCharacterTextSplitter(
-                        chunk_size=1000,
-                        chunk_overlap=200
-                    )
-                ).from_loaders([loader])
-                retriever = index.vectorstore.as_retriever()
-            else:  # لملفات Excel
-                text_splitter = RecursiveCharacterTextSplitter(
-                    chunk_size=1000,
-                    chunk_overlap=200
-                )
-                texts = text_splitter.split_documents(documents)
-                embeddings = HuggingFaceEmbeddings()
-                vectorstore = Chroma.from_documents(texts, embeddings)
-                retriever = vectorstore.as_retriever()
+        os.unlink(tmp_file_path)  # حذف الملف المؤقت
+        
+        # تحويل البيانات إلى نص مفهوم
+        data_description = "\n".join([
+            f"العمود '{col}' يحتوي على: {df[col].dropna().unique()[:5]}... (إجمالي {len(df[col].unique())} قيمة فريدة)" 
+            for col in df.columns
+        ])
+        
+        sample_data = "\n".join([
+            "أمثلة على الصفوف:",
+            *[f"{i}: {row.to_dict()}" for i, row in df.head(3).iterrows()]
+        ])
+        
+        full_context = f"""
+        هيكلة البيانات:
+        {data_description}
+        
+        {sample_data}
+        
+        ملاحظات:
+        - الأرقام تم تقريبها للتبسيط
+        - التاريخ قد يكون بتنسيق مختلف
+        """
+        
+        # عرض عينة من البيانات
+        with st.expander("عرض عينة من البيانات"):
+            st.dataframe(df.head(3))
+            st.write("وصف البيانات:", full_context)
+        
+        # نظام الأسئلة الذكية
+        st.divider()
+        question = st.text_input("اطرح أي سؤال عن البيانات:")
+        
+        if question:
+            # نموذج الذكاء الاصطناعي
+            llm = OpenAI(temperature=0.7, max_tokens=500)
             
-            # واجهة الأسئلة
-            st.divider()
-            question = st.text_input("اطرح سؤالاً عن بيانات المسابقة:")
+            # تصميم Prompt ذكي
+            prompt_template = PromptTemplate(
+                input_variables=["question", "data_context"],
+                template="""
+                أنت خبير في تحليل البيانات. لديك البيانات التالية:
+                {data_context}
+                
+                السؤال: {question}
+                
+                المطلوب:
+                1. فهم طبيعة السؤال
+                2. تحليل البيانات المتاحة
+                3. الإجابة بطريقة واضحة ومفهومة
+                4. إذا كان السؤال يحتاج حساباً، أجر العملية الحسابية
+                5. إذا كان السؤال استنتاجياً، قدم الاستنتاج المنطقي
+                
+                الإجابة:
+                """
+            )
             
-            if question:
-                from langchain.chains import RetrievalQA
-                from langchain.llms import OpenAI
-                
-                # استبدل هذا بالنموذج الذي تريد استخدامه (WatsonX أو غيره)
-                llm = OpenAI(temperature=0)
-                
-                qa = RetrievalQA.from_chain_type(
-                    llm=llm,
-                    chain_type="stuff",
-                    retriever=retriever
-                )
-                result = qa({"query": question})
-                st.subheader("الإجابة:")
-                st.write(result["result"])
-                
-        except Exception as e:
-            st.error(f"خطأ في معالجة الأسئلة: {str(e)}")
+            chain = LLMChain(llm=llm, prompt=prompt_template)
+            response = chain.run(question=question, data_context=full_context)
+            
+            st.subheader("التحليل الذكي:")
+            st.write(response)
+            
+    except Exception as e:
+        st.error(f"حدث خطأ: {str(e)}")
+        if os.path.exists(tmp_file_path):
+            os.unlink(tmp_file_path)
 
-# 4. إعدادات إضافية
+# إضافة تعليمات
 with st.sidebar:
-    st.header("الإعدادات")
-    st.info("""
-    **تعليمات الاستخدام:**
-    1. ارفع ملف المسابقة (PDF, Word, Excel, Text)
-    2. اكتب سؤالك في مربع النص
-    3. اضغط Enter للحصول على الإجابة
+    st.header("تعليمات الاستخدام")
+    st.markdown("""
+    **كيف تستخدم النظام:**
+    1. ارفع ملف Excel أو CSV
+    2. اكتب أي سؤال عن البيانات
+    3. النظام سيفهم السؤال ويحلله
+    
+    **أمثلة لأسئلة ذكية:**
+    - "ما العلاقة بين العمود X والعمود Y؟"
+    - "ما هي الفئة الأكثر ظهوراً في العمود Z؟"
+    - "إذا كان لدينا شرط كذا، ما هي النتيجة المتوقعة؟"
+    - "ما هو المتوسط الحسابي للأعمار؟"
+    - "أعطني تحليلاً عن توزيع المنتجات"
     """)
-    st.warning("ملاحظة: لملفات Excel، يتم معالجة جميع الصفوف كبيانات نصية")
