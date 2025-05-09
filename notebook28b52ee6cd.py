@@ -1,174 +1,161 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
-import pandas as pd
 import os
 import tempfile
-from langchain.llms import OpenAI
-from langchain.chains import LLMChain, RetrievalQA
-from langchain.prompts import PromptTemplate
-from langchain.document_loaders import (
-    PyPDFLoader,
-    Docx2txtLoader,
-    TextLoader,
-    CSVLoader,
-    UnstructuredExcelLoader
-)
+from transformers import AutoTokenizer, AutoModelForSeq2SeqLM, pipeline
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.vectorstores import FAISS
-from langchain.docstore.document import Document
+from langchain.chains import RetrievalQA
+from langchain.document_loaders import TextLoader
+import torch
 
 # إعدادات التطبيق
-st.set_page_config(page_title="🧠 المحلل الشامل للبيانات العربية", layout="wide")
-st.title("📊 نظام فهم وتحليل البيانات الذكي")
+st.set_page_config(page_title="🧠 نظام NLP العربي المتقدم", layout="wide")
+st.title("📖 محلل النصوص العربي الذكي (مستوى احترافي)")
 
-# إعداد مفتاح API
-with st.sidebar:
-    st.subheader("الإعدادات الأساسية")
-    api_key = st.text_input("أدخل مفتاح OpenAI API", type="password", key="api_key")
-    if api_key:
-        os.environ['OPENAI_API_KEY'] = api_key
-        st.success("تم الإعداد بنجاح!")
+# تحميل نماذج مسبقة التدريب
+@st.cache_resource
+def load_models():
+    # نموذج تقسيم النصوص العربي
+    tokenizer = AutoTokenizer.from_pretrained("UBC-NLP/MARBERT")
     
-    st.markdown("---")
-    st.subheader("تحميل البيانات")
-    uploaded_file = st.file_uploader(
-        "رفع الملف (Excel, PDF, Word, CSV, TXT)",
-        type=['xlsx', 'xls', 'csv', 'pdf', 'docx', 'txt']
+    # نموذج فهم السياق العربي
+    model = AutoModelForSeq2SeqLM.from_pretrained("UBC-NLP/MARBERT")
+    
+    # خط أنابيب معالجة اللغة العربية
+    nlp_pipeline = pipeline(
+        "text2text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device=0 if torch.cuda.is_available() else -1
     )
-
-# معالجة جميع أنواع الملفات
-def process_file(file):
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.name)[1]) as tmp_file:
-            tmp_file.write(file.getvalue())
-            tmp_path = tmp_file.name
-        
-        if file.name.endswith(('.xlsx', '.xls')):
-            loader = UnstructuredExcelLoader(tmp_path)
-        elif file.name.endswith('.csv'):
-            loader = CSVLoader(tmp_path, encoding='utf-8')
-        elif file.name.endswith('.pdf'):
-            loader = PyPDFLoader(tmp_path)
-        elif file.name.endswith('.docx'):
-            loader = Docx2txtLoader(tmp_path)
-        elif file.name.endswith('.txt'):
-            loader = TextLoader(tmp_path, encoding='utf-8')
-        else:
-            st.error("نوع الملف غير مدعوم")
-            return None
-        
-        data = loader.load()
-        return data
     
+    # نموذج التضمين للبحث الدلالي
+    embeddings = HuggingFaceEmbeddings(
+        model_name="uer/sbert-base-arabic-light",
+        model_kwargs={'device': 'cuda' if torch.cuda.is_available() else 'cpu'}
+    )
+    
+    return tokenizer, nlp_pipeline, embeddings
+
+tokenizer, nlp_pipeline, embeddings = load_models()
+
+# معالجة الملف النصي
+def process_text_file(file_path):
+    try:
+        # تحميل الملف مع مراعاة الترميز العربي
+        loader = TextLoader(file_path, encoding='utf-8')
+        documents = loader.load()
+        
+        # تقسيم النص مع مراعاة الخصائص العربية
+        arabic_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=512,
+            chunk_overlap=64,
+            length_function=lambda x: len(tokenizer.encode(x)),
+            separators=["\n\n", "\n", "۔", "۔ ", " ", ""]
+        )
+        
+        return arabic_splitter.split_documents(documents)
     except Exception as e:
         st.error(f"خطأ في معالجة الملف: {str(e)}")
         return None
-    finally:
-        if os.path.exists(tmp_path):
-            os.unlink(tmp_path)
 
-# تحويل البيانات إلى وثائق
-def create_documents(data):
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200,
-        separators=["\n\n", "\n", "۔", " ", ""]
-    )
-    return text_splitter.split_documents(data)
+# واجهة تحميل الملف
+uploaded_file = st.file_uploader("رفع ملف نصي عربي (TXT)", type=['txt'])
 
-# واجهة التحليل
-if uploaded_file and 'api_key' in st.session_state:
-    data = process_file(uploaded_file)
+if uploaded_file:
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.txt') as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_path = tmp_file.name
     
-    if data:
-        st.success(f"تم تحميل {len(data)} مستند/صف بنجاح!")
+    # معالجة الملف
+    documents = process_text_file(tmp_path)
+    os.unlink(tmp_path)
+    
+    if documents:
+        st.success(f"تم تحميل {len(documents)} قسم نصي")
         
-        # إنشاء فهرس البحث
-        documents = create_documents(data)
-        embeddings = HuggingFaceEmbeddings(model_name="uer/sbert-base-arabic-light")
+        # إنشاء فهرس بحث دلالي
         db = FAISS.from_documents(documents, embeddings)
         st.session_state.db = db
         
-        # عرض عينة من البيانات
-        with st.expander("عرض عينة من البيانات"):
-            if uploaded_file.name.endswith(('.xlsx', '.xls', '.csv')):
-                try:
-                    if uploaded_file.name.endswith('.csv'):
-                        df = pd.read_csv(uploaded_file)
-                    else:
-                        df = pd.read_excel(uploaded_file)
-                    st.dataframe(df.head(3))
-                except:
-                    st.write(documents[:1])
-            else:
-                st.write(documents[:1])
+        # عرض تحليل أولي
+        with st.expander("التحليل اللغوي الأولي"):
+            sample_text = documents[0].page_content[:500]
+            st.write("**العينة النصية:**", sample_text)
+            
+            # تحليل التوكنز
+            tokens = tokenizer.tokenize(sample_text)
+            st.write("**عدد التوكنز:**", len(tokens))
+            st.write("**أول 20 توكن:**", tokens[:20])
 
-# نظام الأسئلة الذكية
-if 'db' in st.session_state and 'api_key' in st.session_state:
+# نظام الأسئلة المتقدم
+if 'db' in st.session_state:
     st.markdown("---")
-    st.subheader("اطرح سؤالك")
+    st.subheader("نظام التحليل السياقي المتقدم")
     
-    question = st.text_area("اكتب سؤالك هنا (يمكنك استخدام العامية)", height=100)
+    question = st.text_area("أدخل سؤالك التحليلي (بدقة عالية):", height=100)
     
     if question:
         try:
-            # البحث في البيانات
+            # البحث الدلالي
             docs = st.session_state.db.similarity_search(question, k=3)
             context = "\n\n".join([doc.page_content for doc in docs])
             
-            # تحديد نوع السؤال
-            is_general_question = any(word in question for word in [
-                "شو", "ليش", "كيف", "لما", "علاج", "سبب", "رأيك"
-            ])
-            
-            # تصميم Prompt ذكي
-            prompt_template = PromptTemplate(
-                input_variables=["context", "question"],
-                template="""
-                البيانات المتاحة:
-                {context}
-                
-                السؤال: {question}
-                
-                المطلوب:
-                1. فهم السؤال بدقة (حتى لو كان عامياً)
-                2. التحقق من وجود إجابة في البيانات
-                3. إذا لم توجد إجابة محددة، قدم إجابة عامة
-                4. استخدم لغة عربية واضحة
-                
-                الإجابة:
-                """
+            # توليد إجابة متقدمة
+            response = nlp_pipeline(
+                f"السؤال: {question}\nالنص: {context}",
+                max_length=512,
+                num_beams=5,
+                early_stopping=True
             )
             
-            llm = OpenAI(temperature=0.6, max_tokens=800)
-            qa_chain = LLMChain(llm=llm, prompt=prompt_template)
-            response = qa_chain.run(context=context, question=question)
-            
             st.markdown("---")
-            st.subheader("النتيجة:")
-            st.write(response)
+            st.subheader("النتيجة التحليلية:")
+            st.write(response[0]['generated_text'])
             
-            with st.expander("عرض البيانات المستخدمة في الإجابة"):
-                st.write(docs)
+            # عرض التحليل التفصيلي
+            with st.expander("التفاصيل التقنية"):
+                st.write("**السياق المستخدم:**", context)
+                st.write("**إعدادات النموذج:**")
+                st.json({
+                    "model": "MARBERT",
+                    "max_length": 512,
+                    "num_beams": 5,
+                    "early_stopping": True
+                })
                 
         except Exception as e:
-            st.error(f"حدث خطأ: {str(e)}")
+            st.error(f"خطأ في التحليل: {str(e)}")
 
-# إضافة أمثلة توضيحية
-with st.expander("أمثلة على أسئلة يمكن طرحها"):
-    st.markdown("""
-    **لبيانات Excel/CSV:**
-    - "شو أعلى راتب في الشركة؟"
-    - "كم عدد الموظفين في قسم المبيعات؟"
-    - "لما المبيعات نزلت في يناير؟"
+# قسم التحليل الإحصائي
+if 'db' in st.session_state:
+    st.markdown("---")
+    st.subheader("الإحصائيات النصية")
     
-    **للمستندات النصية:**
-    - "شو أسباب المشاكل الإدارية؟"
-    - "إيش الحلول المقترحة للبطالة؟"
-    - "عندي مشكلة مع المدير، شو الحل؟"
-    
-    **أسئلة عامة:**
-    - "شو أفضل طريقة لتربية الأطفال؟"
-    - "كيف أتعامل مع ضغوط العمل؟"
-    """)
+    if st.button("تحليل إحصائي متقدم"):
+        try:
+            all_text = " ".join([doc.page_content for doc in documents])
+            
+            # تحليل التوكنز
+            tokens = tokenizer.tokenize(all_text)
+            vocab = set(tokens)
+            
+            # إحصائيات نصية
+            stats = {
+                "إجمالي الكلمات": len(all_text.split()),
+                "إجمالي التوكنز": len(tokens),
+                "حجم المفردات": len(vocab),
+                "أكثر الكلمات تكرارا": dict(sorted(
+                    {word: tokens.count(word) for word in vocab}.items(),
+                    key=lambda item: item[1],
+                    reverse=True
+                )[:10])
+            }
+            
+            st.write("**التحليل الإحصائي:**")
+            st.json(stats)
+            
+        except Exception as e:
+            st.error(f"خطأ في التحليل الإحصائي: {str(e)}")
