@@ -1,5 +1,10 @@
-streamlit
-langchain==0.0.310
-transformers
-sentence-transformers
-pypdf
+streamlit>=1.28.0
+langchain>=0.0.340
+watsonxlangchain>=1.0.0
+python-dotenv>=1.0.0
+pdf2image>=1.16.3
+pdfminer.six>=20221105
+huggingface-hub>=0.16.4
+sentence-transformers>=2.2.2
+faiss-cpu>=1.7.4
+PyPDF2>=3.0.0
