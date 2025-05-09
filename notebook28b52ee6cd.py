@@ -1,107 +1,95 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
-from langchain.document_loaders import PyPDFLoader
+import os
+from langchain.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader
 from langchain.indexes import VectorstoreIndexCreator
-from langchain.chains import RetrievalQA
-from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.embeddings import HuggingFaceEmbeddings
 
-# إعدادات واجهة المستخدم
-st.set_page_config(page_title="مسابقة الذكاء الاصطناعي", layout="wide")
-st.title("🧠 نظام الإجابة الذكية للمسابقة")
+# حل مشكلة chromadb
+try:
+    from langchain.vectorstores import Chroma
+except ImportError:
+    st.warning("جارٍ تثبيت حزم إضافية... (قد يستغرق دقائق)")
+    os.system("pip install chromadb sentence-transformers")
+    from langchain.vectorstores import Chroma
 
-# 1. حل مشكلة بيانات الاعتماد - استخدام قيم افتراضية (يمكن تغييرها لاحقاً)
-creds = {
-    'apikey': 'your_api_key_here' if 'apikey' not in st.session_state else st.session_state.apikey,
-    'url': 'https://us-south.ml.cloud.ibm.com'
-}
+# واجهة المستخدم
+st.set_page_config(page_title="نظام مساعدة المسابقة", layout="wide")
+st.title("🧠 نظام الإجابة عن أسئلة المسابقة")
 
-project_id = 'your_project_id' if 'project_id' not in st.session_state else st.session_state.project_id
+# 1. تحميل الملفات
+uploaded_file = st.file_uploader(
+    "رفع وثيقة المسابقة (PDF, DOCX, TXT)", 
+    type=['pdf', 'docx', 'txt'],
+    accept_multiple_files=False
+)
 
-# 2. واجهة لإدخال البيانات السرية (بدون حفظ في الكود)
-with st.sidebar:
-    st.subheader("إعدادات الوصول لـ WatsonX")
-    new_api = st.text_input("أدخل مفتاح API", type="password")
-    new_project = st.text_input("أدخل معرف المشروع")
-    
-    if new_api:
-        st.session_state.apikey = new_api
-        creds['apikey'] = new_api
-    if new_project:
-        st.session_state.project_id = new_project
-        project_id = new_project
-
-# 3. تحميل ملف PDF من واجهة المستخدم
-uploaded_file = st.file_uploader("رفع ملف PDF للمسابقة", type="pdf")
-pdf_ready = False
-
-if uploaded_file:
-    # حفظ الملف مؤقتاً
-    with open("competition_file.pdf", "wb") as f:
-        f.write(uploaded_file.getbuffer())
-    pdf_ready = True
-    st.success("تم تحميل الملف بنجاح!")
-
-# 4. نظام الدردشة الأساسي
-if 'messages' not in st.session_state:
-    st.session_state.messages = []
-
-for msg in st.session_state.messages:
-    st.chat_message(msg["role"]).write(msg["content"])
-
-if prompt := st.chat_input("اطرح سؤالاً عن المسابقة..."):
+# 2. معالجة الملفات
+def process_file(uploaded_file):
     try:
-        # تهيئة النموذج اللغوي
-        from watsonxlangchain import LangChainInterface
-        llm = LangChainInterface(
-            credentials=creds,
-            model='meta-llama/llama-2-70b-chat',
-            params={
-                'decoding_method': 'sample',
-                'max_new_tokens': 200,
-                'temperature': 0.7  # زيادة الإبداع للإجابات
-            },
-            project_id=project_id
-        )
+        temp_file = f"temp_{uploaded_file.name}"
+        with open(temp_file, "wb") as f:
+            f.write(uploaded_file.getbuffer())
         
-        st.chat_message("user").write(prompt)
-        st.session_state.messages.append({"role": "user", "content": prompt})
+        if uploaded_file.name.endswith('.pdf'):
+            loader = PyPDFLoader(temp_file)
+        elif uploaded_file.name.endswith('.docx'):
+            loader = Docx2txtLoader(temp_file)
+        elif uploaded_file.name.endswith('.txt'):
+            loader = TextLoader(temp_file, encoding='utf-8')
         
-        response = llm(prompt)
+        documents = loader.load()
+        os.remove(temp_file)  # حذف الملف المؤقت
         
-        st.chat_message("assistant").write(response)
-        st.session_state.messages.append({"role": "assistant", "content": response})
+        return documents
     except Exception as e:
-        st.error(f"خطأ في الاتصال: {str(e)}")
+        st.error(f"خطأ في معالجة الملف: {str(e)}")
+        return None
 
-# 5. نظام الأسئلة عن ملف PDF
-if pdf_ready:
-    st.divider()
-    st.subheader("أسئلة عن وثيقة المسابقة")
+# 3. نظام الأسئلة والإجابات
+if uploaded_file:
+    documents = process_file(uploaded_file)
     
-    try:
-        @st.cache_resource
-        def prepare_document():
-            loader = PyPDFLoader("competition_file.pdf")
+    if documents:
+        st.success(f"تم تحميل {len(documents)} صفحة بنجاح!")
+        
+        # إنشاء فهرس للبحث
+        try:
             index = VectorstoreIndexCreator(
                 embedding=HuggingFaceEmbeddings(),
                 text_splitter=RecursiveCharacterTextSplitter(
-                    chunk_size=500,
-                    chunk_overlap=100
+                    chunk_size=1000,
+                    chunk_overlap=200
                 )
             ).from_loaders([loader])
-            return index.vectorstore.as_retriever()
-        
-        doc_question = st.text_input("اطرح سؤالاً عن محتوى الوثيقة")
-        if doc_question:
-            retriever = prepare_document()
-            qa_chain = RetrievalQA.from_chain_type(
-                llm=llm,
-                chain_type="stuff",
-                retriever=retriever
-            )
-            result = qa_chain({"query": doc_question})
-            st.info("الإجابة من الوثيقة:")
-            st.write(result["result"])
-    except Exception as e:
-        st.warning(f"حدث خطأ في معالجة الوثيقة: {str(e)}")
+            
+            retriever = index.vectorstore.as_retriever()
+            
+            # واجهة الأسئلة
+            st.divider()
+            question = st.text_input("اطرح سؤالاً عن وثيقة المسابقة:")
+            
+            if question:
+                from langchain.chains import RetrievalQA
+                qa = RetrievalQA.from_chain_type(
+                    llm=llm,  # تأكد من تعريف llm الخاص بك
+                    chain_type="stuff",
+                    retriever=retriever
+                )
+                result = qa({"query": question})
+                st.subheader("الإجابة:")
+                st.write(result["result"])
+                
+        except Exception as e:
+            st.error(f"خطأ في معالجة الأسئلة: {str(e)}")
+
+# 4. إعدادات إضافية
+with st.sidebar:
+    st.header("الإعدادات")
+    st.info("""
+    **تعليمات الاستخدام:**
+    1. ارفع وثيقة المسابقة
+    2. اكتب سؤالك في مربع النص
+    3. اضغط Enter للحصول على الإجابة
+    """)
