@@ -38,20 +38,23 @@ def process_file(uploaded_file):
             loader = Docx2txtLoader(temp_file)
         elif uploaded_file.name.endswith('.txt'):
             loader = TextLoader(temp_file, encoding='utf-8')
+        else:
+            st.error("نوع الملف غير مدعوم")
+            return None
         
         documents = loader.load()
         os.remove(temp_file)  # حذف الملف المؤقت
-        
-        return documents
+        return documents, loader  # إرجاع كل من المستندات واللودر
+    
     except Exception as e:
         st.error(f"خطأ في معالجة الملف: {str(e)}")
-        return None
+        return None, None
 
 # 3. نظام الأسئلة والإجابات
 if uploaded_file:
-    documents = process_file(uploaded_file)
+    documents, loader = process_file(uploaded_file)
     
-    if documents:
+    if documents and loader:  # التأكد من وجود المستندات واللودر
         st.success(f"تم تحميل {len(documents)} صفحة بنجاح!")
         
         # إنشاء فهرس للبحث
@@ -62,7 +65,7 @@ if uploaded_file:
                     chunk_size=1000,
                     chunk_overlap=200
                 )
-            ).from_loaders([loader])
+            ).from_loaders([loader])  # استخدام اللودر الذي تم تعريفه
             
             retriever = index.vectorstore.as_retriever()
             
@@ -72,8 +75,13 @@ if uploaded_file:
             
             if question:
                 from langchain.chains import RetrievalQA
+                from langchain.llms import OpenAI  # أو استخدم النموذج الذي تريده
+                
+                # تهيئة النموذج اللغوي (استبدل بمفتاح API الخاص بك)
+                llm = OpenAI(temperature=0)  # أو استخدام watsonx كما في الكود الأصلي
+                
                 qa = RetrievalQA.from_chain_type(
-                    llm=llm,  # تأكد من تعريف llm الخاص بك
+                    llm=llm,
                     chain_type="stuff",
                     retriever=retriever
                 )
