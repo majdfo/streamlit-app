@@ -14,6 +14,8 @@ from langchain.chains import RetrievalQA
 from langchain.embeddings import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from watsonxlangchain import LangChainInterface
+from watsonxlangchain import LangChainInterface
+
 
 
 # Import Streamlit for UI development
