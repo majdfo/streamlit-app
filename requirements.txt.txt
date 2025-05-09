@@ -1,5 +1,7 @@
 streamlit
-langchain
+langchain>=0.1.14
 transformers
 arabert
 watsonxlangchain
+pypdf
+sentence-transformers
